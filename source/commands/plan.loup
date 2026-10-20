@@ -1,0 +1,103 @@
+@mode(host.dual)
+
+# Target resolution: which source goes to which destination name. This is
+# pure: the one fact it needs from the file system, what the destination
+# operand is, is passed in.
+#
+#   cp SRC DEST          DEST is not a directory: copy onto the name DEST
+#   cp SRC... DIR        copy each SRC into DIR, as DIR/basename(SRC)
+#   cp -t DIR SRC...     the same, with the directory named first
+#   cp -T SRC DEST       always onto the name DEST, even if it is a directory
+
+from io.path import (basename);
+from cli.args import (Options);
+from commands.fsinfo import (Kind, join_path);
+from commands.quote import (quote);
+
+pub struct Job {
+    pub src: string;
+    pub dst: string;
+}
+
+# The jobs to run, or the error that stops cp before it copies anything.
+# `usage` says whether the error is followed by the "Try 'cp --help'" line.
+pub struct Plan {
+    pub jobs: list[Job];
+    pub error: string;
+    pub usage: bool;
+}
+
+func fail(msg: string, usage: bool): Plan {
+    let none: list[Job] = [];
+    return Plan(jobs = none, error = msg, usage = usage);
+}
+
+# The operand that names the destination: the -t directory, or the last
+# operand ("" when there is none).
+pub func destination_operand(opts: Options): string {
+    if (opts.has_target_dir) {
+        return opts.target_dir;
+    }
+    if (opts.operands.len() == 0) {
+        return "";
+    }
+    return opts.operands[opts.operands.len() - 1];
+}
+
+# Why a destination directory is unusable, for its kind.
+func not_a_dir_reason(kind: Kind): string {
+    return if (kind == Kind.Missing or kind == Kind.Dangling) {
+        "No such file or directory"
+    } else {
+        "Not a directory"
+    };
+}
+
+func into(dir: string, sources: list[string]): list[Job] {
+    var jobs: list[Job] = [];
+    for (src in sources) {
+        jobs.push(Job(src = src, dst = join_path(dir, basename(src))));
+    }
+    return jobs;
+}
+
+# `dest_kind` is what destination_operand(opts) is on disk.
+pub func plan_copy(opts: Options, dest_kind: Kind): Plan {
+    let ops = opts.operands;
+    if (opts.has_target_dir and opts.no_target) {
+        return fail("cannot combine --target-directory (-t) and --no-target-directory (-T)", false);
+    }
+    if (ops.len() == 0) {
+        return fail("missing file operand", true);
+    }
+
+    if (opts.has_target_dir) {
+        if (dest_kind != Kind.Dir) {
+            return fail(i"target directory {$ quote(opts.target_dir) $}: {$ not_a_dir_reason(dest_kind) $}", false);
+        }
+        return Plan(jobs = into(opts.target_dir, ops), error = "", usage = false);
+    }
+
+    if (ops.len() == 1) {
+        return fail(i"missing destination file operand after {$ quote(ops[0]) $}", true);
+    }
+    let dest = ops[ops.len() - 1];
+    var sources: list[string] = [];
+    for (k in 0..(ops.len() - 1)) {
+        sources.push(ops[k]);
+    }
+
+    if (opts.no_target) {
+        if (ops.len() > 2) {
+            return fail(i"extra operand {$ quote(ops[2]) $}", true);
+        }
+        return Plan(jobs = [Job(src = ops[0], dst = dest)], error = "", usage = false);
+    }
+    if (dest_kind == Kind.Dir) {
+        return Plan(jobs = into(dest, sources), error = "", usage = false);
+    }
+    if (ops.len() == 2) {
+        return Plan(jobs = [Job(src = ops[0], dst = dest)], error = "", usage = false);
+    }
+    return fail(i"target {$ quote(dest) $}: {$ not_a_dir_reason(dest_kind) $}", false);
+}

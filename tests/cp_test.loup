@@ -1,0 +1,90 @@
+@mode(host.dual)
+
+# Path helpers, and copies inside .temp/cp-unit/ (git-ignored; the tests run
+# from the repository root). Each test uses its own directory.
+
+from debug.assert import (expect, expectEq);
+from io.fs import (createDir, exists, isDir, isFile, readText, removeDir, writeText);
+from cli.args import (parse_args);
+from commands.fsinfo import (Kind, absolute, is_within, path_kind, join_path);
+from commands.cp import (arrow, run_jobs);
+from commands.quote import (quote);
+
+func fresh(name: string): string {
+    let dir = ".temp/cp-unit/" + name;
+    if (exists(dir)) {
+        removeDir(dir);
+    }
+    createDir(dir + "/src/sub");
+    writeText(dir + "/src/a.txt", "alpha\n");
+    writeText(dir + "/src/sub/b.txt", "beta\n");
+    return dir;
+}
+
+func test_absolute_paths(): void {
+    expectEq(absolute("a/../b/./c", "/home/u"), "/home/u/b/c", "relative");
+    expectEq(absolute("/x//y/", "/home/u"), "/x/y", "absolute");
+    expectEq(absolute("a/./b", ""), "a/b", "no working directory");
+}
+
+func test_is_within(): void {
+    expect(is_within("/a/b", "/a"), "below");
+    expect(is_within("/a", "/a"), "equal");
+    expect(!is_within("/ab", "/a"), "a longer name is not inside");
+    expect(is_within("/x", "/"), "everything is inside /");
+}
+
+func test_messages(): void {
+    expectEq(arrow("a", "dir/a"), "'a' -> 'dir/a'", "-v line");
+    expectEq(quote("it's"), "\"it's\"", "quoting");
+    expectEq(join_path("dir/", "a"), "dir/a", "no double slash");
+}
+
+func test_copy_file_and_verbose(): void {
+    let dir = fresh("file");
+    let out = run_jobs(parse_args(["-v", dir + "/src/a.txt", dir + "/copy.txt"]).unwrap(), "");
+    expectEq(out.status, 0, "status");
+    expectEq(readText(dir + "/copy.txt"), "alpha\n", "content");
+    expectEq(out.lines[0], arrow(dir + "/src/a.txt", dir + "/copy.txt"), "-v line");
+}
+
+func test_overwrite_and_no_clobber(): void {
+    let dir = fresh("overwrite");
+    writeText(dir + "/old.txt", "old\n");
+    let kept = run_jobs(parse_args(["-n", dir + "/src/a.txt", dir + "/old.txt"]).unwrap(), "");
+    expectEq(kept.status, 0, "-n status");
+    expectEq(readText(dir + "/old.txt"), "old\n", "-n keeps the file");
+    let replaced = run_jobs(parse_args([dir + "/src/a.txt", dir + "/old.txt"]).unwrap(), "");
+    expectEq(replaced.status, 0, "status");
+    expectEq(readText(dir + "/old.txt"), "alpha\n", "overwritten");
+}
+
+func test_recursive_copy(): void {
+    let dir = fresh("tree");
+    let out = run_jobs(parse_args(["-r", dir + "/src", dir + "/dst"]).unwrap(), "");
+    expectEq(out.status, 0, "status");
+    expect(isDir(dir + "/dst/sub"), "subdirectory");
+    expectEq(readText(dir + "/dst/sub/b.txt"), "beta\n", "nested file");
+    let again = run_jobs(parse_args(["-r", dir + "/src", dir + "/dst"]).unwrap(), "");
+    expect(isFile(dir + "/dst/src/a.txt"), "a second copy goes into the existing directory");
+    expectEq(again.status, 0, "status");
+}
+
+func test_errors(): void {
+    let dir = fresh("errors");
+    let no_r = run_jobs(parse_args([dir + "/src", dir + "/dst"]).unwrap(), "");
+    expectEq(no_r.status, 1, "directory without -r");
+    expectEq(no_r.errors[0], i"-r not specified; omitting directory {$ quote(dir + "/src") $}", "message");
+    expect(path_kind(dir + "/dst") == Kind.Missing, "nothing copied");
+
+    let itself = run_jobs(parse_args(["-r", dir + "/src", dir + "/src/sub"]).unwrap(), "");
+    expectEq(itself.status, 1, "into itself");
+    expect(!exists(dir + "/src/sub/src"), "refused before copying");
+
+    let same = run_jobs(parse_args([dir + "/src/a.txt", dir + "/src/./a.txt"]).unwrap(), "");
+    expectEq(same.status, 1, "same file");
+
+    let missing = run_jobs(parse_args([dir + "/nope", dir + "/src/a.txt", dir + "/src/sub"]).unwrap(), "");
+    expectEq(missing.status, 1, "one missing source");
+    expectEq(readText(dir + "/src/sub/a.txt"), "alpha\n", "the other source is still copied");
+}

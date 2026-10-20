@@ -1,0 +1,305 @@
+@mode(host.dual)
+
+# cp: copies files, and with -r whole directory trees. Each job (a source and
+# the destination name chosen by commands/plan.loup) is checked, copied, and
+# verified; problems are collected and cp carries on with the next job, so
+# one bad operand does not stop the others (exit status 1 at the end).
+#
+# The native build's io.fs reports nothing when a copy fails, so every write
+# is verified afterwards:
+# - a new file is copied with io.fs.copy, and must then exist;
+# - an existing file is overwritten from the source's bytes read into memory
+#   first (so copying a file onto another name for itself cannot truncate
+#   it), and must then hold those bytes. With -f, a destination that could
+#   not be written is removed and written again.
+
+from io.fs import (copy, createDir, isDir, isFile, readBytes, remove, writeBytes);
+from io.path import (dirname);
+from appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE);
+from cli.args import (Options);
+from commands.fsinfo import (Kind, join_path, sorted_names, names_key, path_kind, entry_kind, missing_reason, absolute, is_within);
+from commands.plan import (plan_copy, destination_operand);
+from commands.quote import (quote);
+
+# What cp has to say: -v lines for standard output, messages for standard
+# error (without the `cp: ` prefix), the exit status, and whether a usage
+# error asks for the "Try 'cp --help'" line.
+pub struct Outcome {
+    pub lines: list[string];
+    pub errors: list[string];
+    pub status: int;
+    pub usage: bool;
+}
+
+func ok(): Outcome {
+    let none: list[string] = [];
+    let no_errors: list[string] = [];
+    return Outcome(lines = none, errors = no_errors, status = EXIT_OK, usage = false);
+}
+
+func failed(msg: string): Outcome {
+    let none: list[string] = [];
+    return Outcome(lines = none, errors = [msg], status = EXIT_FAILURE, usage = false);
+}
+
+# A message that does not change the exit status.
+func warning(msg: string): Outcome {
+    let none: list[string] = [];
+    return Outcome(lines = none, errors = [msg], status = EXIT_OK, usage = false);
+}
+
+func done(line: string, verbose: bool): Outcome {
+    let no_errors: list[string] = [];
+    var lines: list[string] = [];
+    if (verbose) {
+        lines.push(line);
+    }
+    return Outcome(lines = lines, errors = no_errors, status = EXIT_OK, usage = false);
+}
+
+# `a` followed by `b`.
+pub func combine(a: Outcome, b: Outcome): Outcome {
+    var lines: list[string] = [];
+    var errors: list[string] = [];
+    for (l in a.lines) {
+        lines.push(l);
+    }
+    for (l in b.lines) {
+        lines.push(l);
+    }
+    for (e in a.errors) {
+        errors.push(e);
+    }
+    for (e in b.errors) {
+        errors.push(e);
+    }
+    let status = if (a.status != EXIT_OK) { a.status } else { b.status };
+    return Outcome(lines = lines, errors = errors, status = status, usage = a.usage or b.usage);
+}
+
+# The -v line: 'SRC' -> 'DST'.
+pub func arrow(src: string, dst: string): string {
+    return quote(src) + " -> " + quote(dst);
+}
+
+# Why a new entry `dst` cannot be created, judged from its parent.
+pub func create_reason(dst: string): string {
+    if (dst.endsWith("/")) {
+        return "Not a directory";
+    }
+    let parent = dirname(dst);
+    if (isDir(parent)) {
+        return "Permission denied";
+    }
+    return missing_reason(join_path(parent, "x"));
+}
+
+# Whether the file at `path` holds exactly `data`.
+pub func holds(path: string, data: bytes): bool {
+    if (!isFile(path)) {
+        return false;
+    }
+    try {
+        let found = readBytes(path);
+        if (found.len() != data.len()) {
+            return false;
+        }
+        for (k in 0..data.len()) {
+            if (found[k] != data[k]) {
+                return false;
+            }
+        }
+        return true;
+    } catch (IoError as e) {
+        return false;
+    }
+}
+
+func write_all(path: string, data: bytes): void {
+    try {
+        writeBytes(path, data);
+    } catch (IoError as e) {
+        return;
+    }
+}
+
+# Copies the regular file `src` to `dst`.
+pub func copy_file(src: string, dst: string, opts: Options, cwd: string): Outcome {
+    let dst_kind = path_kind(dst);
+    if (dst_kind != Kind.Missing and absolute(src, cwd) == absolute(dst, cwd)) {
+        return failed(i"{$ quote(src) $} and {$ quote(dst) $} are the same file");
+    }
+    if (dst_kind == Kind.Dir) {
+        return failed(i"cannot overwrite directory {$ quote(dst) $} with non-directory {$ quote(src) $}");
+    }
+    if (dst_kind == Kind.Dangling) {
+        return failed(i"not writing through dangling symlink {$ quote(dst) $}");
+    }
+
+    if (dst_kind == Kind.Missing) {
+        if (!dst.endsWith("/") and missing_reason(dst) == "Not a directory") {
+            return failed(i"cannot stat {$ quote(dst) $}: Not a directory");
+        }
+        if (dst.endsWith("/") or !isDir(dirname(dst))) {
+            return failed(i"cannot create regular file {$ quote(dst) $}: {$ create_reason(dst) $}");
+        }
+        try {
+            copy(src, dst);
+        } catch (IoError as e) {
+            # Reported below: the file is not there.
+        }
+        if (!isFile(dst)) {
+            return failed(i"cannot create regular file {$ quote(dst) $}: {$ create_reason(dst) $}");
+        }
+        return done(arrow(src, dst), opts.verbose);
+    }
+
+    # The destination exists.
+    if (opts.no_clobber) {
+        return ok();
+    }
+    let data = readBytes(src);
+    write_all(dst, data);
+    if (!holds(dst, data) and opts.force) {
+        try {
+            remove(dst);
+        } catch (IoError as e) {
+            # Reported below if the retry fails too.
+        }
+        write_all(dst, data);
+    }
+    if (!holds(dst, data)) {
+        return failed(i"cannot create regular file {$ quote(dst) $}: Permission denied");
+    }
+    return done(arrow(src, dst), opts.verbose);
+}
+
+# Copies the directory `src` to `dst` (creating `dst` if needed), then each
+# of its entries in name order.
+pub func copy_dir(src: string, dst: string, opts: Options, cwd: string): Outcome {
+    if (!opts.recursive) {
+        return failed(i"-r not specified; omitting directory {$ quote(src) $}");
+    }
+    if (is_within(absolute(dst, cwd), absolute(src, cwd))) {
+        return failed(i"cannot copy a directory, {$ quote(src) $}, into itself, {$ quote(dst) $}");
+    }
+
+    var result = ok();
+    let dst_kind = path_kind(dst);
+    if (dst_kind == Kind.Missing) {
+        if (missing_reason(dst) == "Not a directory") {
+            return failed(i"cannot stat {$ quote(dst) $}: Not a directory");
+        }
+        # io.fs.createDir also creates missing parents, which cp must not.
+        if (!isDir(dirname(dst))) {
+            return failed(i"cannot create directory {$ quote(dst) $}: {$ create_reason(dst) $}");
+        }
+        try {
+            createDir(dst);
+        } catch (IoError as e) {
+            # Reported below: the directory is not there.
+        }
+        if (!isDir(dst)) {
+            return failed(i"cannot create directory {$ quote(dst) $}: {$ create_reason(dst) $}");
+        }
+        result = done(arrow(src, dst), opts.verbose);
+    } else if (dst_kind != Kind.Dir) {
+        return failed(i"cannot overwrite non-directory {$ quote(dst) $} with directory {$ quote(src) $}");
+    }
+
+    let key = names_key(src);
+    for (name in sorted_names(src)) {
+        let kind = entry_kind(src, name, key);
+        let part = copy_entry(join_path(src, name), join_path(dst, name), kind, opts, cwd);
+        result = combine(result, part);
+    }
+    return result;
+}
+
+# Copies one entry found inside a directory being copied with -r. Symbolic
+# links that can be recognised are not copied: io.fs cannot create links,
+# and following a link to a directory could copy far more than asked, or
+# loop.
+pub func copy_entry(src: string, dst: string, kind: Kind, opts: Options, cwd: string): Outcome {
+    if (kind == Kind.Dir) {
+        return copy_dir(src, dst, opts, cwd);
+    }
+    if (kind == Kind.File) {
+        return copy_file(src, dst, opts, cwd);
+    }
+    if (kind == Kind.LinkDir or kind == Kind.Dangling) {
+        return failed(i"cannot create symbolic link {$ quote(dst) $}: Operation not supported");
+    }
+    return failed(i"cannot create special file {$ quote(dst) $}: Operation not supported");
+}
+
+# Copies one command-line source; symbolic links named on the command line
+# are followed.
+pub func copy_operand(src: string, dst: string, opts: Options, cwd: string): Outcome {
+    let kind = path_kind(src);
+    if (kind == Kind.Missing or kind == Kind.Dangling) {
+        let reason = if (kind == Kind.Dangling) { "No such file or directory" } else { missing_reason(src) };
+        return failed(i"cannot stat {$ quote(src) $}: {$ reason $}");
+    }
+    return copy_entry(src, dst, kind, opts, cwd);
+}
+
+# Everything cp does for the parsed options; `cwd` is the working directory
+# ($PWD, or "" if unknown). An error in the plan stops cp before it copies
+# anything.
+pub func run_jobs(opts: Options, cwd: string): Outcome {
+    let plan = plan_copy(opts, path_kind(destination_operand(opts)));
+    if (plan.error.len() > 0) {
+        let none: list[string] = [];
+        return Outcome(lines = none, errors = [plan.error], status = EXIT_FAILURE, usage = plan.usage);
+    }
+
+    var result = ok();
+    # The sources and destinations of the jobs done so far, and the files
+    # written, which a later operand with the same name must not overwrite.
+    var done_src: list[string] = [];
+    var done_dst: list[string] = [];
+    var written: list[string] = [];
+    for (job in plan.jobs) {
+        let source = absolute(job.src, cwd);
+        let target = absolute(job.dst, cwd);
+        let is_dir = path_kind(job.src) == Kind.Dir;
+        var repeated = false;
+        for (k in 0..done_src.len()) {
+            if (done_src[k] == source and done_dst[k] == target) {
+                repeated = true;
+            }
+        }
+        if (repeated) {
+            let what = if (is_dir) { "directory" } else { "file" };
+            result = combine(result, warning(i"warning: source {$ what $} {$ quote(job.src) $} specified more than once"));
+            continue;
+        }
+        if (!is_dir and written.contains(target)) {
+            result = combine(result, failed(i"will not overwrite just-created {$ quote(job.dst) $} with {$ quote(job.src) $}"));
+            continue;
+        }
+        let part = copy_operand(job.src, job.dst, opts, cwd);
+        done_src.push(source);
+        done_dst.push(target);
+        if (part.status == EXIT_OK and !is_dir) {
+            written.push(target);
+        }
+        result = combine(result, part);
+    }
+    return result;
+}
+
+pub func run_cp(opts: Options): int {
+    let outcome = run_jobs(opts, env("PWD") ?? "");
+    for (line in outcome.lines) {
+        println(line);
+    }
+    for (msg in outcome.errors) {
+        printErr(i"{$ APP_NAME $}: {$ msg $}");
+    }
+    if (outcome.usage) {
+        printErr(i"Try '{$ APP_NAME $} --help' for more information.");
+    }
+    return outcome.status;
+}

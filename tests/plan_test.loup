@@ -1,0 +1,58 @@
+@mode(host.dual)
+
+# Target resolution, with the destination's kind given directly.
+
+from debug.assert import (expect, expectEq);
+from cli.args import (parse_args);
+from commands.fsinfo import (Kind);
+from commands.plan import (plan_copy, destination_operand);
+
+func plan(argv: list[string], kind: Kind): string {
+    let p = plan_copy(parse_args(argv).unwrap(), kind);
+    if (p.error.len() > 0) {
+        return "error: " + p.error;
+    }
+    var parts: list[string] = [];
+    for (job in p.jobs) {
+        parts.push(job.src + ">" + job.dst);
+    }
+    return parts.join(",");
+}
+
+func test_onto_a_name(): void {
+    expectEq(plan(["a", "b"], Kind.Missing), "a>b", "new name");
+    expectEq(plan(["a", "b"], Kind.File), "a>b", "existing file");
+}
+
+func test_into_a_directory(): void {
+    expectEq(plan(["a", "dir"], Kind.Dir), "a>dir/a", "one source");
+    expectEq(plan(["x/a", "y/b/", "dir/"], Kind.Dir), "x/a>dir/a,y/b/>dir/b", "basenames, no double slash");
+}
+
+func test_target_directory_option(): void {
+    expectEq(plan(["-t", "dir", "a", "b"], Kind.Dir), "a>dir/a,b>dir/b", "-t");
+    expectEq(plan(["-t", "dir", "a"], Kind.Missing), "error: target directory 'dir': No such file or directory", "missing");
+    expectEq(plan(["-t", "dir", "a"], Kind.File), "error: target directory 'dir': Not a directory", "a file");
+    expectEq(destination_operand(parse_args(["-t", "d", "a", "b"]).unwrap()), "d", "the -t directory");
+    expectEq(destination_operand(parse_args(["a", "b"]).unwrap()), "b", "the last operand");
+}
+
+func test_no_target_directory(): void {
+    expectEq(plan(["-T", "a", "dir"], Kind.Dir), "a>dir", "-T copies onto the name");
+    expectEq(plan(["-T", "a", "b", "c"], Kind.Missing), "error: extra operand 'c'", "-T with three operands");
+    expectEq(plan(["-T", "-t", "d", "a"], Kind.Dir),
+        "error: cannot combine --target-directory (-t) and --no-target-directory (-T)", "-t with -T");
+}
+
+func test_missing_operands(): void {
+    let none: list[string] = [];
+    expectEq(plan(none, Kind.Missing), "error: missing file operand", "none");
+    expectEq(plan(["a"], Kind.File), "error: missing destination file operand after 'a'", "one");
+    expect(plan_copy(parse_args(["a"]).unwrap(), Kind.File).usage, "followed by the Try line");
+}
+
+func test_several_sources_need_a_directory(): void {
+    expectEq(plan(["a", "b", "c"], Kind.Missing), "error: target 'c': No such file or directory", "missing");
+    expectEq(plan(["a", "b", "c"], Kind.File), "error: target 'c': Not a directory", "a file");
+    expect(!plan_copy(parse_args(["a", "b", "c"]).unwrap(), Kind.File).usage, "no Try line");
+}

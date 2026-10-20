@@ -1,28 +1,32 @@
 @mode(host.dual)
 
-from appinfo import (APP_NAME, APP_VERSION, APP_SUMMARY);
-from cli.args import (DEFAULT_GREETING);
+from appinfo import (APP_NAME, APP_VERSION);
 
 pub func usage(): string {
     let lines = [
-        i"usage: {$ APP_NAME $} [OPTIONS] COMMAND [ARGS...]",
+        i"Usage: {$ APP_NAME $} [OPTION]... [-T] SOURCE DEST",
+        i"  or:  {$ APP_NAME $} [OPTION]... SOURCE... DIRECTORY",
+        i"  or:  {$ APP_NAME $} [OPTION]... -t DIRECTORY SOURCE...",
+        "Copy SOURCE to DEST, or multiple SOURCE(s) to DIRECTORY.",
         "",
-        APP_SUMMARY,
+        "  -f, --force                  if an existing destination file cannot be",
+        "                                 written, remove it and try again (this",
+        "                                 option is ignored when -n is also used)",
+        "  -n, --no-clobber             do not overwrite an existing file",
+        "  -R, -r, --recursive          copy directories recursively",
+        "  -t, --target-directory=DIRECTORY  copy all SOURCE arguments into DIRECTORY",
+        "  -T, --no-target-directory    treat DEST as a normal file",
+        "  -v, --verbose                explain what is being done",
+        "      --help        display this help and exit",
+        "      --version     output version information and exit",
         "",
-        "Commands:",
-        "  hello [NAME]          Print a greeting (NAME defaults to 'world')",
-        "  help                  Show this help",
-        "",
-        "Options:",
-        i"  -g, --greeting TEXT   Greeting used by 'hello' (default: {$ DEFAULT_GREETING $})",
-        "      --shout           Print the greeting in upper case",
-        "  -v, --verbose         Print diagnostic messages to stderr",
-        "  -h, --help            Show this help and exit",
-        "  -V, --version         Show the version and exit",
+        "Symbolic links named on the command line are followed. Inside a directory",
+        "copied with -r, regular files and directories are copied; symbolic links",
+        "and special files that can be recognised are reported and skipped.",
     ];
     return lines.join("\n");
 }
 
 pub func version_line(): string {
-    return i"{$ APP_NAME $} {$ APP_VERSION $}";
+    return i"{$ APP_NAME $} (loup-cmd-{$ APP_NAME $}) {$ APP_VERSION $}";
 }

@@ -1,45 +1,77 @@
 @mode(host.dual)
 
-# Command-line parsing. Loup 1.26 has no CLI library, so arguments are
-# parsed by hand into an Options value.
-#
-# Grammar: [OPTIONS] COMMAND [OPERANDS...]
-#   Options may appear anywhere before `--`; everything after `--` is an
-#   operand. Value options accept `--name VALUE` and `--name=VALUE`.
-
-pub const DEFAULT_GREETING: string = "Hello";
+# Command-line parsing for cp, following GNU getopt_long: options may appear
+# anywhere among the operands, short options combine (`-rv`), `-t` takes its
+# directory attached (`-tDIR`) or as the next argument, `--` ends the
+# options, and a long option may be abbreviated to any unambiguous prefix.
 
 pub struct Options {
-    pub command: string;
-    pub operands: list[string];
     pub help: bool;
     pub version: bool;
+    # -r, -R: copy directories recursively.
+    pub recursive: bool;
+    # -n: never overwrite an existing file (wins over -f).
+    pub no_clobber: bool;
+    # -f: if an existing destination cannot be written, remove it and retry.
+    pub force: bool;
     pub verbose: bool;
-    pub shout: bool;
-    pub greeting: string;
+    # -T: the destination is the name to copy to, never a directory to copy
+    # into.
+    pub no_target: bool;
+    # -t DIR: copy every operand into DIR.
+    pub has_target_dir: bool;
+    pub target_dir: string;
+    pub operands: list[string];
+}
+
+# In the order of GNU cp's option table, which its "ambiguous" message
+# follows.
+const LONG_OPTIONS: string = "force no-clobber no-target-directory recursive target-directory verbose help version";
+
+# Resolves a long option name, which may be an unambiguous prefix. An empty
+# error means "unrecognized".
+pub func match_long(name: string): Result[string, string] {
+    var matches: list[string] = [];
+    for (opt in LONG_OPTIONS.split(" ")) {
+        if (opt == name) {
+            return Ok(opt);
+        }
+        if (opt.startsWith(name)) {
+            matches.push(opt);
+        }
+    }
+    if (matches.len() == 1) {
+        return Ok(matches[0]);
+    }
+    if (matches.len() == 0) {
+        return Err("");
+    }
+    var quoted: list[string] = [];
+    for (m in matches) {
+        quoted.push(i"'--{$ m $}'");
+    }
+    return Err(i"option '--{$ name $}' is ambiguous; possibilities: {$ quoted.join(" ") $}");
 }
 
 pub func parse_args(argv: list[string]): Result[Options, string] {
-    var command = "";
-    var operands: list[string] = [];
     var help = false;
     var version = false;
+    var recursive = false;
+    var no_clobber = false;
+    var force = false;
     var verbose = false;
-    var shout = false;
-    var greeting = DEFAULT_GREETING;
-    var only_operands = false;
+    var no_target = false;
+    var target_dir = "";
+    var target_given = false;
+    var operands: list[string] = [];
 
     var i = 0;
+    var only_operands = false;
     while (i < argv.len()) {
         let arg = argv[i];
         i += 1;
-
         if (only_operands or arg == "-" or !arg.startsWith("-")) {
-            if (command.is_empty()) {
-                command = arg;
-            } else {
-                operands.push(arg);
-            }
+            operands.push(arg);
             continue;
         }
         if (arg == "--") {
@@ -47,52 +79,106 @@ pub func parse_args(argv: list[string]): Result[Options, string] {
             continue;
         }
 
-        # Split `--name=value` into its name and inline value.
-        var name = arg;
-        var inline_value: Option[string] = None;
-        if (arg.startsWith("--") and arg.contains("=")) {
-            let parts = arg.split("=");
-            name = parts[0];
-            inline_value = Some(parts.slice(1).join("="));
-        }
+        # The directory given to -t / --target-directory, if this argument
+        # sets one.
+        var dir = "";
+        var sets_dir = false;
 
-        if (name == "-g" or name == "--greeting") {
-            match inline_value {
-                Some(v) => { greeting = v; },
-                None => {
-                    if (i >= argv.len()) {
-                        return Err(i"option '{$ name $}' requires a value");
+        if (arg.startsWith("--")) {
+            let body = arg.slice(2);
+            let eq = body.index_of("=");
+            let name = if (eq >= 0) { body.slice(0, eq) } else { body };
+            let long = match match_long(name) {
+                Ok(found) => found,
+                Err(msg) => {
+                    if (msg.len() > 0) {
+                        return Err(msg);
                     }
-                    greeting = argv[i];
-                    i += 1;
+                    return Err(i"unrecognized option '{$ arg $}'");
                 },
+            };
+            if (long == "target-directory") {
+                if (eq >= 0) {
+                    dir = body.slice(eq + 1);
+                } else if (i < argv.len()) {
+                    dir = argv[i];
+                    i += 1;
+                } else {
+                    return Err("option '--target-directory' requires an argument");
+                }
+                sets_dir = true;
+            } else if (eq >= 0) {
+                return Err(i"option '--{$ long $}' doesn't allow an argument");
+            } else if (long == "force") {
+                force = true;
+            } else if (long == "no-clobber") {
+                no_clobber = true;
+            } else if (long == "no-target-directory") {
+                no_target = true;
+            } else if (long == "recursive") {
+                recursive = true;
+            } else if (long == "verbose") {
+                verbose = true;
+            } else if (long == "help") {
+                help = true;
+            } else {
+                version = true;
             }
-            continue;
+        } else {
+            var letters: list[string] = [];
+            for (ch in arg.slice(1)) {
+                letters.push(ch);
+            }
+            var k = 0;
+            while (k < letters.len()) {
+                let ch = letters[k];
+                k += 1;
+                if (ch == "r" or ch == "R") {
+                    recursive = true;
+                } else if (ch == "n") {
+                    no_clobber = true;
+                } else if (ch == "f") {
+                    force = true;
+                } else if (ch == "v") {
+                    verbose = true;
+                } else if (ch == "T") {
+                    no_target = true;
+                } else if (ch == "t") {
+                    if (k < letters.len()) {
+                        dir = letters.slice(k).join("");
+                    } else if (i < argv.len()) {
+                        dir = argv[i];
+                        i += 1;
+                    } else {
+                        return Err("option requires an argument -- 't'");
+                    }
+                    sets_dir = true;
+                    k = letters.len();
+                } else {
+                    return Err(i"invalid option -- '{$ ch $}'");
+                }
+            }
         }
 
-        if (inline_value.is_some()) {
-            return Err(i"option '{$ name $}' does not take a value");
-        }
-        if (name == "-h" or name == "--help") {
-            help = true;
-        } else if (name == "-V" or name == "--version") {
-            version = true;
-        } else if (name == "-v" or name == "--verbose") {
-            verbose = true;
-        } else if (name == "--shout") {
-            shout = true;
-        } else {
-            return Err(i"unknown option '{$ name $}'");
+        if (sets_dir) {
+            if (target_given) {
+                return Err("multiple target directories specified");
+            }
+            target_given = true;
+            target_dir = dir;
         }
     }
 
     return Ok(Options(
-        command = command,
-        operands = operands,
         help = help,
         version = version,
+        recursive = recursive,
+        no_clobber = no_clobber,
+        force = force,
         verbose = verbose,
-        shout = shout,
-        greeting = greeting,
+        no_target = no_target,
+        has_target_dir = target_given,
+        target_dir = target_dir,
+        operands = operands,
     ));
 }

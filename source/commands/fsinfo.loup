@@ -1,0 +1,157 @@
+@mode(host.dual)
+
+# What cp can find out about a path with io.fs, which has no stat() or
+# lstat(): `isDir`, `isFile` and `exists` follow symbolic links, and
+# `listDir` lists names. So:
+#
+# - A dangling symbolic link makes `exists` false although the directory
+#   entry is there; `entry_present` looks the name up in its directory.
+# - A symbolic link to a directory looks like the directory. The kernel
+#   resolves `link/..` to the parent of the link's target, so for a real
+#   directory `dir/..` lists the same names as the directory that contains
+#   `dir`, and for a link it (almost always) does not. `entry_kind` uses that
+#   so that -r never follows a link back up the tree.
+# - Two names for the same file (links) cannot be told apart; `absolute`
+#   and `is_within` compare paths as text.
+#
+# The native build's io.fs never throws (a missing directory lists as empty);
+# the Stage0 interpreter used by `make test` throws IoError. Both are handled.
+
+from io.fs import (exists, isDir, isFile, listDir);
+from io.path import (basename, dirname, isAbsolute, normalize);
+
+pub enum Kind {
+    File,
+    Dir,
+    # A directory reached through a symbolic link.
+    LinkDir,
+    # A symbolic link whose target does not exist.
+    Dangling,
+    # Something that exists but is neither a file nor a directory (a FIFO, a
+    # socket, a device).
+    Other,
+    Missing,
+}
+
+# `dir/name`, without doubling a trailing slash (GNU's file_name_concat).
+pub func join_path(dir: string, name: string): string {
+    if (dir.endsWith("/")) {
+        return dir + name;
+    }
+    return dir + "/" + name;
+}
+
+# The names in a directory in byte order, or an empty list if it cannot be
+# read.
+pub func sorted_names(path: string): list[string] {
+    var out: list[string] = [];
+    try {
+        for (name in listDir(path)) {
+            out.push(name);
+        }
+    } catch (IoError as e) {
+        return out;
+    }
+    out.sort(func(a: string, b: string): int { return a.compareTo(b); });
+    return out;
+}
+
+# One string that is equal for two directories exactly when they hold the
+# same names (a name cannot contain `/`).
+pub func names_key(path: string): string {
+    return sorted_names(path).join("/");
+}
+
+# Whether there is a directory entry at `path`, even a dangling link.
+pub func entry_present(path: string): bool {
+    if (exists(path)) {
+        return true;
+    }
+    let name = basename(path);
+    if (name == "" or name == "." or name == "..") {
+        return false;
+    }
+    return sorted_names(dirname(path)).contains(name);
+}
+
+# What `path` is, following symbolic links (as for a command-line operand).
+pub func path_kind(path: string): Kind {
+    if (isDir(path)) {
+        return Kind.Dir;
+    }
+    if (isFile(path)) {
+        return Kind.File;
+    }
+    if (exists(path)) {
+        return Kind.Other;
+    }
+    if (!path.endsWith("/") and entry_present(path)) {
+        return Kind.Dangling;
+    }
+    return Kind.Missing;
+}
+
+# What the entry `name` of directory `dir` is, telling links to directories
+# apart from directories; `dir_key` is names_key(dir).
+pub func entry_kind(dir: string, name: string, dir_key: string): Kind {
+    let path = join_path(dir, name);
+    if (isDir(path)) {
+        if (names_key(join_path(path, "..")) != dir_key) {
+            return Kind.LinkDir;
+        }
+        return Kind.Dir;
+    }
+    if (isFile(path)) {
+        return Kind.File;
+    }
+    if (exists(path)) {
+        return Kind.Other;
+    }
+    return Kind.Dangling;
+}
+
+# Why `path` cannot be accessed: "Not a directory" when a component that
+# should be a directory is a file, as in `file/` or `file/x`.
+pub func missing_reason(path: string): string {
+    var cur = path;
+    while (cur.len() > 1 and cur.endsWith("/")) {
+        cur = cur.slice(0, cur.len() - 1);
+    }
+    if (cur != path and exists(cur)) {
+        return "Not a directory";
+    }
+    while (true) {
+        let parent = dirname(cur);
+        if (parent == cur) {
+            break;
+        }
+        if (exists(parent)) {
+            if (isDir(parent)) {
+                break;
+            }
+            return "Not a directory";
+        }
+        cur = parent;
+    }
+    return "No such file or directory";
+}
+
+# `path` as an absolute, normalised path, given the working directory `cwd`
+# (normally $PWD). With no `cwd`, a relative path stays relative, which still
+# compares correctly with other relative paths.
+pub func absolute(path: string, cwd: string): string {
+    if (isAbsolute(path) or cwd.len() == 0) {
+        return normalize(path);
+    }
+    return normalize(join_path(cwd, path));
+}
+
+# Whether `inner` is `outer` or lies below it (both already absolute and
+# normalised).
+pub func is_within(inner: string, outer: string): bool {
+    if (inner == outer) {
+        return true;
+    }
+    let prefix = if (outer.endsWith("/")) { outer } else { outer + "/" };
+    return inner.startsWith(prefix);
+}

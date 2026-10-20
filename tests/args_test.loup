@@ -1,64 +1,59 @@
 @mode(host.dual)
 
 from debug.assert import (expect, expectEq);
-from cli.args import (parse_args, DEFAULT_GREETING);
+from cli.args import (parse_args, match_long);
 
 func test_no_arguments(): void {
     let none: list[string] = [];
     let opts = parse_args(none).unwrap();
-    expectEq(opts.command, "", "no command");
     expectEq(opts.operands.len(), 0, "no operands");
-    expectEq(opts.greeting, DEFAULT_GREETING, "default greeting");
-    expect(!opts.help and !opts.version and !opts.verbose and !opts.shout, "no flags set");
+    expect(!opts.recursive and !opts.no_clobber and !opts.force and !opts.verbose, "no flags");
+    expect(!opts.no_target and !opts.has_target_dir, "no target options");
 }
 
-func test_command_and_operands(): void {
-    let opts = parse_args(["hello", "Ann"]).unwrap();
-    expectEq(opts.command, "hello", "command");
-    expectEq(opts.operands.len(), 1, "one operand");
-    expectEq(opts.operands[0], "Ann", "operand");
+func test_combined_short_options(): void {
+    let opts = parse_args(["-rnfvT", "a", "b"]).unwrap();
+    expect(opts.recursive and opts.no_clobber and opts.force, "-r -n -f");
+    expect(opts.verbose and opts.no_target, "-v -T");
+    expect(parse_args(["-R"]).unwrap().recursive, "-R");
 }
 
-func test_flags_anywhere(): void {
-    let opts = parse_args(["-v", "hello", "--shout", "Ann"]).unwrap();
-    expect(opts.verbose, "verbose");
-    expect(opts.shout, "shout");
-    expectEq(opts.command, "hello", "command");
-    expectEq(opts.operands[0], "Ann", "operand");
+func test_target_directory_forms(): void {
+    let separate = parse_args(["-t", "dir", "a"]).unwrap();
+    expect(separate.has_target_dir, "-t DIR");
+    expectEq(separate.target_dir, "dir", "separate argument");
+    expectEq(separate.operands.len(), 1, "one source");
+    expectEq(parse_args(["-tdir", "a"]).unwrap().target_dir, "dir", "attached");
+    expectEq(parse_args(["-vtdir", "a"]).unwrap().target_dir, "dir", "after another letter");
+    expectEq(parse_args(["--target-directory=dir", "a"]).unwrap().target_dir, "dir", "--target-directory=DIR");
+    expectEq(parse_args(["--target", "dir", "a"]).unwrap().target_dir, "dir", "abbreviated, separate");
+    let empty = parse_args(["-t", "", "a"]).unwrap();
+    expect(empty.has_target_dir and empty.target_dir == "", "an empty directory name is still given");
 }
 
-func test_help_and_version(): void {
-    expect(parse_args(["--help"]).unwrap().help, "--help");
-    expect(parse_args(["-h"]).unwrap().help, "-h");
-    expect(parse_args(["--version"]).unwrap().version, "--version");
-    expect(parse_args(["-V"]).unwrap().version, "-V");
+func test_target_directory_errors(): void {
+    expectEq(parse_args(["a", "-t"]).unwrap_err(), "option requires an argument -- 't'", "-t at the end");
+    expectEq(parse_args(["--target-directory"]).unwrap_err(),
+        "option '--target-directory' requires an argument", "long form");
+    expectEq(parse_args(["-t", "x", "-t", "y"]).unwrap_err(), "multiple target directories specified", "twice");
 }
 
-func test_value_option_forms(): void {
-    expectEq(parse_args(["-g", "Hi"]).unwrap().greeting, "Hi", "-g VALUE");
-    expectEq(parse_args(["--greeting", "Hi"]).unwrap().greeting, "Hi", "--greeting VALUE");
-    expectEq(parse_args(["--greeting=a=b"]).unwrap().greeting, "a=b", "--greeting=VALUE keeps '='");
+func test_options_anywhere_and_double_dash(): void {
+    let opts = parse_args(["a", "-v", "b"]).unwrap();
+    expect(opts.verbose, "-v after an operand");
+    expectEq(opts.operands.len(), 2, "two operands");
+    let literal = parse_args(["--", "-v", "b"]).unwrap();
+    expect(!literal.verbose, "-v after --");
+    expectEq(literal.operands[0], "-v", "operand");
 }
 
-func test_double_dash_ends_options(): void {
-    let opts = parse_args(["hello", "--", "--shout"]).unwrap();
-    expect(!opts.shout, "--shout after -- is an operand");
-    expectEq(opts.operands[0], "--shout", "operand");
-}
-
-func test_lone_dash_is_operand(): void {
-    let opts = parse_args(["hello", "-"]).unwrap();
-    expectEq(opts.operands[0], "-", "operand");
-}
-
-func test_unknown_option(): void {
-    expectEq(parse_args(["--nope"]).unwrap_err(), "unknown option '--nope'", "error message");
-}
-
-func test_missing_value(): void {
-    expectEq(parse_args(["-g"]).unwrap_err(), "option '-g' requires a value", "error message");
-}
-
-func test_flag_with_value(): void {
-    expectEq(parse_args(["--shout=1"]).unwrap_err(), "option '--shout' does not take a value", "error message");
+func test_long_options(): void {
+    let opts = parse_args(["--recursive", "--no-clobber", "--force", "--verbose", "--no-target-directory"]).unwrap();
+    expect(opts.recursive and opts.no_clobber and opts.force and opts.verbose and opts.no_target, "all long flags");
+    expectEq(match_long("rec").unwrap(), "recursive", "prefix");
+    expectEq(match_long("no").unwrap_err(),
+        "option '--no' is ambiguous; possibilities: '--no-clobber' '--no-target-directory'", "ambiguous");
+    expectEq(parse_args(["--verbose=1"]).unwrap_err(), "option '--verbose' doesn't allow an argument", "argument");
+    expectEq(parse_args(["--bogus"]).unwrap_err(), "unrecognized option '--bogus'", "unknown");
+    expectEq(parse_args(["-z"]).unwrap_err(), "invalid option -- 'z'", "-z");
 }
