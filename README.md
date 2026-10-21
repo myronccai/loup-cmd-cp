@@ -68,7 +68,7 @@ license: <https://code-craft.ai/loup/license>.
 ```sh
 make build                            # native binary: build/cp
 make ci                               # check, unit tests, build, end-to-end tests
-make run ARGS="-rv source build/copy" # run from source with loup run
+make run ARGS="-rv source build/copy" # run from source (Stage0's loup-bootstrap run)
 ```
 
 In a directory holding `README.md`, `backup/` and `notes/` (with

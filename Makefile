@@ -17,9 +17,13 @@ TEST_ARGS      ?=
 
 all: build
 
-# Run from source, e.g. `make run ARGS="-rv source build/copy"`.
+# Run from source, e.g. `make run ARGS="-rv source build/copy"`. This uses
+# Stage0's interpreter: under the self-hosted `loup run` of Loup 1.26.0,
+# io.fs.copy runs the system's cp (so cp's own checks are bypassed) and
+# io.fs.listDir leaves out dot-files (so `-r` skips them). Stage0 copies
+# itself and lists every entry, as the native binary does.
 run:
-	$(LOUP) run source/main.loup -- $(ARGS)
+	$(LOUP_BOOTSTRAP) run source/main.loup -- $(ARGS)
 
 # Type-check source/main.loup and every module it imports.
 check:

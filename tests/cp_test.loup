@@ -13,7 +13,7 @@ from debug.assert import (expect, expectEq);
 from io.fs import (createDir, exists, isDir, isFile, readText, removeDir, writeText);
 from cli.args import (parse_args);
 from commands.fsinfo import (Kind, absolute, is_within, path_kind, join_path);
-from commands.cp import (arrow, run_jobs);
+from commands.cp import (Outcome, arrow, run_jobs);
 from commands.quote import (quote);
 
 func fresh(name: string): string {
@@ -93,4 +93,30 @@ func test_errors(): void {
     let missing = run_jobs(parse_args([dir + "/nope", dir + "/src/a.txt", dir + "/src/sub"]).unwrap(), "");
     expectEq(missing.status, 1, "one missing source");
     expectEq(readText(dir + "/src/sub/a.txt"), "alpha\n", "the other source is still copied");
+}
+
+func test_outcomes_add_up(): void {
+    let none: list[string] = [];
+    let a = Outcome(lines = ["one"], errors = none, status = 0, usage = false);
+    let b = Outcome(lines = none, errors = ["bad"], status = 1, usage = false);
+    let c = Outcome(lines = ["two"], errors = ["worse"], status = 0, usage = true);
+    let sum = a + b + c;
+    expectEq(sum.lines.join("|"), "one|two", "lines in order");
+    expectEq(sum.errors.join("|"), "bad|worse", "errors in order");
+    expectEq(sum.status, 1, "the first failure wins");
+    expect(sum.usage, "the Try line is kept");
+}
+
+func test_repeated_source_and_plan_errors(): void {
+    let dir = fresh("repeat");
+    createDir(dir + "/into");
+    let src = dir + "/src/a.txt";
+    let twice = run_jobs(parse_args(["-v", src, dir + "/src/./a.txt", dir + "/into"]).unwrap(), "");
+    expectEq(twice.status, 0, "a repeated source is only a warning");
+    expectEq(twice.lines.len(), 1, "copied once");
+    expectEq(twice.errors[0], i"warning: source file {$ quote(dir + "/src/./a.txt") $} specified more than once", "warning");
+    let none: list[string] = [];
+    let missing = run_jobs(parse_args(none).unwrap(), "");
+    expectEq(missing.errors[0], "missing file operand", "plan error");
+    expect(missing.usage, "a usage error asks for the Try line");
 }

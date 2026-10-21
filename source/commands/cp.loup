@@ -14,11 +14,12 @@
 #   not be written is removed and written again.
 #
 # Runtime: host.dual. Compiled into the native binary build/cp by
-# `make build`, which `make e2e` tests; `loup run source/main.loup`
-# interprets the same code (there io.fs.copy runs the system's cp), and
-# tests/cp_test.loup copies inside .temp/ under Stage0 (`make test`).
+# `make build`, which `make e2e` tests; Stage0 interprets the same code for
+# `make run`, and tests/cp_test.loup copies inside .temp/ under Stage0
+# (`make test`). The self-hosted `loup run` is not used: its io.fs.copy runs
+# the system's cp and its listDir leaves out dot-files.
 #
-# Structure: Outcome values and combine() (results are collected, never
+# Structure: the Outcome struct, whose `+` collects results (nothing is
 # printed on the way), then the copy functions from the bottom up:
 # copy_file, copy_dir (which calls copy_entry for each entry, recursively),
 # copy_entry, copy_operand. run_jobs plans the jobs and runs them, skipping
@@ -36,11 +37,21 @@ from commands.quote import (quote);
 # What cp has to say: -v lines for standard output, messages for standard
 # error (without the `cp: ` prefix), the exit status, and whether a usage
 # error asks for the "Try 'cp --help'" line.
-pub struct Outcome {
+#
+# Outcomes add up: `a + b` is `a` followed by `b` (lines and errors in
+# order, the first failing status wins). That is how the results of a
+# tree's entries and of the jobs are collected.
+pub struct Outcome implements Add[Outcome, Outcome] {
     pub lines: list[string];
     pub errors: list[string];
     pub status: int;
     pub usage: bool;
+
+    operator func +(other: Outcome): Outcome {
+        let status = if (this.status != EXIT_OK) { this.status } else { other.status };
+        return Outcome(lines = this.lines + other.lines, errors = this.errors + other.errors,
+            status = status, usage = this.usage or other.usage);
+    }
 }
 
 func ok(): Outcome {
@@ -67,26 +78,6 @@ func done(line: string, verbose: bool): Outcome {
         lines.push(line);
     }
     return Outcome(lines = lines, errors = no_errors, status = EXIT_OK, usage = false);
-}
-
-# `a` followed by `b`.
-pub func combine(a: Outcome, b: Outcome): Outcome {
-    var lines: list[string] = [];
-    var errors: list[string] = [];
-    for (l in a.lines) {
-        lines.push(l);
-    }
-    for (l in b.lines) {
-        lines.push(l);
-    }
-    for (e in a.errors) {
-        errors.push(e);
-    }
-    for (e in b.errors) {
-        errors.push(e);
-    }
-    let status = if (a.status != EXIT_OK) { a.status } else { b.status };
-    return Outcome(lines = lines, errors = errors, status = status, usage = a.usage or b.usage);
 }
 
 # The -v line: 'SRC' -> 'DST'.
@@ -122,7 +113,7 @@ pub func holds(path: string, data: bytes): bool {
             }
         }
         return true;
-    } catch (IoError as e) {
+    } catch (IoError) {
         return false;
     }
 }
@@ -130,7 +121,7 @@ pub func holds(path: string, data: bytes): bool {
 func write_all(path: string, data: bytes): void {
     try {
         writeBytes(path, data);
-    } catch (IoError as e) {
+    } catch (IoError) {
         return;
     }
 }
@@ -157,7 +148,7 @@ pub func copy_file(src: string, dst: string, opts: Options, cwd: string): Outcom
         }
         try {
             copy(src, dst);
-        } catch (IoError as e) {
+        } catch (IoError) {
             # Reported below: the file is not there.
         }
         if (!isFile(dst)) {
@@ -175,7 +166,7 @@ pub func copy_file(src: string, dst: string, opts: Options, cwd: string): Outcom
     if (!holds(dst, data) and opts.force) {
         try {
             remove(dst);
-        } catch (IoError as e) {
+        } catch (IoError) {
             # Reported below if the retry fails too.
         }
         write_all(dst, data);
@@ -208,7 +199,7 @@ pub func copy_dir(src: string, dst: string, opts: Options, cwd: string): Outcome
         }
         try {
             createDir(dst);
-        } catch (IoError as e) {
+        } catch (IoError) {
             # Reported below: the directory is not there.
         }
         if (!isDir(dst)) {
@@ -223,7 +214,7 @@ pub func copy_dir(src: string, dst: string, opts: Options, cwd: string): Outcome
     for (name in sorted_names(src)) {
         let kind = entry_kind(src, name, key);
         let part = copy_entry(join_path(src, name), join_path(dst, name), kind, opts, cwd);
-        result = combine(result, part);
+        result = result + part;
     }
     return result;
 }
@@ -262,8 +253,7 @@ pub func copy_operand(src: string, dst: string, opts: Options, cwd: string): Out
 pub func run_jobs(opts: Options, cwd: string): Outcome {
     let plan = plan_copy(opts, path_kind(destination_operand(opts)));
     if (plan.error.len() > 0) {
-        let none: list[string] = [];
-        return Outcome(lines = none, errors = [plan.error], status = EXIT_FAILURE, usage = plan.usage);
+        return failed(plan.error) with (usage = plan.usage);
     }
 
     var result = ok();
@@ -272,23 +262,21 @@ pub func run_jobs(opts: Options, cwd: string): Outcome {
     var done_src: list[string] = [];
     var done_dst: list[string] = [];
     var written: list[string] = [];
-    for (job in plan.jobs) {
+    jobs: for (job in plan.jobs) {
         let source = absolute(job.src, cwd);
         let target = absolute(job.dst, cwd);
         let is_dir = path_kind(job.src) == Kind.Dir;
-        var repeated = false;
+        # The same source to the same destination again: warn and go on
+        # with the next job.
         for (k in 0..done_src.len()) {
             if (done_src[k] == source and done_dst[k] == target) {
-                repeated = true;
+                let what = if (is_dir) { "directory" } else { "file" };
+                result = result + warning(i"warning: source {$ what $} {$ quote(job.src) $} specified more than once");
+                continue jobs;
             }
         }
-        if (repeated) {
-            let what = if (is_dir) { "directory" } else { "file" };
-            result = combine(result, warning(i"warning: source {$ what $} {$ quote(job.src) $} specified more than once"));
-            continue;
-        }
         if (!is_dir and written.contains(target)) {
-            result = combine(result, failed(i"will not overwrite just-created {$ quote(job.dst) $} with {$ quote(job.src) $}"));
+            result = result + failed(i"will not overwrite just-created {$ quote(job.dst) $} with {$ quote(job.src) $}");
             continue;
         }
         let part = copy_operand(job.src, job.dst, opts, cwd);
@@ -297,7 +285,7 @@ pub func run_jobs(opts: Options, cwd: string): Outcome {
         if (part.status == EXIT_OK and !is_dir) {
             written.push(target);
         }
-        result = combine(result, part);
+        result = result + part;
     }
     return result;
 }

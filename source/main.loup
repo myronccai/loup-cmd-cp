@@ -5,11 +5,11 @@
 # list.
 #
 # Runtime: host.dual. The entry point: main() gets the command line. The same
-# source runs two ways: `loup run source/main.loup` (`make run`) interprets
-# it in the scripted runtime, and `make build` compiles it with the rest of
-# source/ into the native binary build/cp, which `make e2e` then tests. The
-# binary is the real program: under `loup run`, io.fs.copy hands the work to
-# the system's cp and listDir leaves out dot-files.
+# source runs two ways: `make build` compiles it with the rest of source/
+# into the native binary build/cp, which `make e2e` then tests, and
+# `make run` interprets it with Stage0 (`loup-bootstrap run
+# source/main.loup`). Not with the self-hosted `loup run`: there io.fs.copy
+# hands the work to the system's cp and listDir leaves out dot-files.
 
 from cli.app import (run);
 
