@@ -14,8 +14,11 @@
 # - Two names for the same file (links) cannot be told apart; `absolute`
 #   and `is_within` compare paths as text.
 #
-# The native build's io.fs never throws (a missing directory lists as empty);
-# the Stage0 interpreter used by `make test` throws IoError. Both are handled.
+# Runtime: host.dual. Compiled into the native binary build/cp by
+# `make build`; `loup run source/main.loup` interprets the same code. The
+# native build's io.fs never throws (a missing directory lists as empty);
+# the Stage0 interpreter used by `make test` throws IoError. Both are
+# handled.
 
 from io.fs import (exists, isDir, isFile, listDir);
 from io.path import (basename, dirname, isAbsolute, normalize);

@@ -12,6 +12,18 @@
 #   first (so copying a file onto another name for itself cannot truncate
 #   it), and must then hold those bytes. With -f, a destination that could
 #   not be written is removed and written again.
+#
+# Runtime: host.dual. Compiled into the native binary build/cp by
+# `make build`, which `make e2e` tests; `loup run source/main.loup`
+# interprets the same code (there io.fs.copy runs the system's cp), and
+# tests/cp_test.loup copies inside .temp/ under Stage0 (`make test`).
+#
+# Structure: Outcome values and combine() (results are collected, never
+# printed on the way), then the copy functions from the bottom up:
+# copy_file, copy_dir (which calls copy_entry for each entry, recursively),
+# copy_entry, copy_operand. run_jobs plans the jobs and runs them, skipping
+# repeated sources and refusing to overwrite a file it has just written;
+# run_cp prints the Outcome.
 
 from io.fs import (copy, createDir, isDir, isFile, readBytes, remove, writeBytes);
 from io.path import (dirname);

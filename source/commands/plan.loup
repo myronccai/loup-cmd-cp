@@ -8,6 +8,10 @@
 #   cp SRC... DIR        copy each SRC into DIR, as DIR/basename(SRC)
 #   cp -t DIR SRC...     the same, with the directory named first
 #   cp -T SRC DEST       always onto the name DEST, even if it is a directory
+#
+# Runtime: host.dual. Compiled into the native binary build/cp by
+# `make build`; `loup run source/main.loup` interprets the same code, and
+# tests/plan_test.loup exercises it under Stage0 (`make test`).
 
 from io.path import (basename);
 from cli.args import (Options);

@@ -1,7 +1,13 @@
 @mode(host.dual)
 
-# Path helpers, and copies inside .temp/cp-unit/ (git-ignored; the tests run
-# from the repository root). Each test uses its own directory.
+# Unit tests for the path helpers, and copies inside .temp/cp-unit/
+# (git-ignored; the tests run from the repository root). Each test uses its
+# own directory.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this file
+# with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test per
+# `func test_*()`, so the copies go through Stage0's io.fs, which throws
+# IoError on failure. It is not part of the binary.
 
 from debug.assert import (expect, expectEq);
 from io.fs import (createDir, exists, isDir, isFile, readText, removeDir, writeText);

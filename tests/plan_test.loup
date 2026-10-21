@@ -1,6 +1,11 @@
 @mode(host.dual)
 
-# Target resolution, with the destination's kind given directly.
+# Unit tests for target resolution (source/commands/plan.loup), with the
+# destination's kind given directly.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this file
+# with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test per
+# `func test_*()`. It is not part of the binary.
 
 from debug.assert import (expect, expectEq);
 from cli.args import (parse_args);

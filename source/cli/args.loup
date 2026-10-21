@@ -4,6 +4,10 @@
 # anywhere among the operands, short options combine (`-rv`), `-t` takes its
 # directory attached (`-tDIR`) or as the next argument, `--` ends the
 # options, and a long option may be abbreviated to any unambiguous prefix.
+#
+# Runtime: host.dual. Compiled into the native binary build/cp by
+# `make build`; `loup run source/main.loup` interprets the same code, and
+# tests/args_test.loup exercises it under Stage0 (`make test`).
 
 pub struct Options {
     pub help: bool;
